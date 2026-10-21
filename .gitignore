@@ -32,6 +32,8 @@ venv/
 *.ninfer
 *.ninfer.conversion.json
 /models/
+# Local dependency prefix created by scripts/setup_local_deps.sh (no-sudo Linux build)
+.local-deps/
 out/
 
 # Local workspace and transient runtime output
