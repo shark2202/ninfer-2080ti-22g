@@ -54,6 +54,14 @@ def main() -> int:
     print(f"{'并发':>4} {'每路 tok/s':>26} {'聚合 tok/s':>11} {'墙钟 s':>8} {'prompt ms':>10}")
     print("-" * 66)
     for c in a.clients:
+        # 每路用**不同的**题面：llama.cpp 的 ngram-mod 会在 n-gram 表里命中上一路相同文本
+        # （实测接受长度从 3-6 飙到 18-22），那样量到的是缓存命中而不是并发扩展。
+        prompts = [f"{a.prompt}\n（这是第 {i+1} 个彼此独立的问题，请重新作答，答案不要重复前一个。）" for i in range(c)]
+        t0 = time.time()
+        with ThreadPoolExecutor(max_workers=c) as ex:
+            rs = list(ex.map(lambda i: one(base, a.model, prompts[i], a.max_tokens), range(c)))
+    print("-" * 66)
+    for c in a.clients:
         t0 = time.time()
         with ThreadPoolExecutor(max_workers=c) as ex:
             rs = list(ex.map(lambda _: one(base, a.model, a.prompt, a.max_tokens), range(c)))
