@@ -32,6 +32,8 @@ venv/
 *.ninfer
 *.ninfer.conversion.json
 /models/
+# Machine-local launcher config (ports and absolute paths)
+config.ninfer.sh
 # Local dependency prefix created by scripts/setup_local_deps.sh (no-sudo Linux build)
 .local-deps/
 out/
