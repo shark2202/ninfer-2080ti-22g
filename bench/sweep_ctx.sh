@@ -5,7 +5,7 @@ set -u
 cd /home/a/ai-work/ninfer-2080ti-22g
 PREFIX=$PWD/.local-deps
 M=models/qwen3_8_27b.ninfer
-ctx=$1; lanes=$2; spec=$3
+ctx=$1; lanes=$2; spec=$3; slots=${4:-auto}
 extra=()
 [ "$spec" = "mtp" ] && extra=(--spec mtp --draft-tokens 3 --lm-head-draft)
 log=/tmp/sweep-$$.log
@@ -22,9 +22,9 @@ done
 if grep -qa "listening on" "$log"; then
   plan=$(grep -aoE "weights [0-9.]+ GiB" "$log" | head -1)
   vram=$(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits | awk -F', ' -v p=$pid '$1==p{print $2}')
-  printf "  ctx=%-7s lanes=%-2s spec=%-4s ✅ 起来（%s，进程显存 %s MiB）\n" "$ctx" "$lanes" "$spec" "$plan" "${vram:-?}"
+  printf "  ctx=%-7s lanes=%-2s slots=%-4s spec=%-4s ✅ 起来（%s，进程显存 %s MiB）\n" "$ctx" "$lanes" "$slots" "$spec" "$plan" "${vram:-?}"
 else
-  printf "  ctx=%-7s lanes=%-2s spec=%-4s ❌ %s\n" "$ctx" "$lanes" "$spec" \
+  printf "  ctx=%-7s lanes=%-2s slots=%-4s spec=%-4s ❌ %s\n" "$ctx" "$lanes" "$slots" "$spec" \
     "$(grep -aoE 'Device budget cannot hold|error: [a-z ]+' "$log" | head -1)"
 fi
 kill "$pid" 2>/dev/null
