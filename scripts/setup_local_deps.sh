@@ -39,13 +39,23 @@
 #      必须显式 -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.4/bin/nvcc
 #   8. CUDA 13 不再支持 sm_52，编译器自检会失败 → -DCMAKE_CUDA_ARCHITECTURES=75
 #
-# 用法：bash scripts/setup_local_deps.sh   （在 ninfer-2080ti-22g 根目录）
+#  14. **解包目录与 cmake venv 都不能放 /tmp**：脚本原来把 deb 解到 /tmp 再软链进前缀、
+#      cmake venv 也在 /tmp —— /tmp 一被清，前缀里 22 个软链集体断掉，服务启动报
+#      "error while loading shared libraries: liburing.so.2"。现在解包目录是
+#      .local-deps/work、venv 是 .local-deps/cmake，都随仓库持久化。
+#  15. **sed 不能读同一个文件又写回它**：`> file` 会先截断，sed 于是读到空 → 产出 0 字节的
+#      libcurl.pc，后面 pkg-config 报 "appears to be empty"。要改写就写 .tmp 再 mv。
+#
+# 用法：
+#   bash scripts/setup_local_deps.sh              # 装依赖 + 配置（会重配 build 目录）
+#   SKIP_CONFIGURE=1 bash scripts/setup_local_deps.sh   # 只修依赖，保住已编译的二进制
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PREFIX="$REPO/.local-deps"
-WORK="${WORK:-/tmp/ninfer-deps}"
-CMAKE_BIN="${CMAKE_BIN:-/tmp/cmenv/bin}"
+WORK="${WORK:-$PREFIX/work}"   # 必须持久：/tmp 会被清，
+                                          # 软链指向 /tmp 会在几天后集体断掉
+CMAKE_BIN="${CMAKE_BIN:-$PREFIX/cmake/bin}"   # 同理：/tmp 里的 venv 会被清
 CUDA_ROOT="${CUDA_ROOT:-/usr/local/cuda-13.4}"
 JOBS="${JOBS:-4}"
 
@@ -57,9 +67,9 @@ step() { echo; echo "=== $* ==="; }
 # ---- 1. cmake 3.31（系统 3.22 太旧；4.x 与本项目的 CUDA 探测不兼容）----
 step "cmake 3.31.6"
 if [ ! -x "$CMAKE_BIN/cmake" ] || ! "$CMAKE_BIN/cmake" --version | grep -q "3\.31"; then
-  python3 -m venv /tmp/cmenv
-  /tmp/cmenv/bin/pip install -q -U pip
-  /tmp/cmenv/bin/pip install -q -i https://mirrors.aliyun.com/pypi/simple/ "cmake==3.31.6"
+  python3 -m venv "$PREFIX/cmake"
+  "$CMAKE_BIN/pip" install -q -U pip
+  "$CMAKE_BIN/pip" install -q -i https://mirrors.aliyun.com/pypi/simple/ "cmake==3.31.6"
 fi
 "$CMAKE_BIN/cmake" --version | head -1
 
@@ -70,7 +80,7 @@ libswresample-dev libavformat58 libavcodec58 libavutil56 libswscale5 libswresamp
 libavfilter7 libavdevice58 libpostproc55 libcurl4-openssl-dev libcurl4 \
 libhwloc-dev libhwloc15 liburing-dev liburing2 libgomp1"
 rm -rf jammy && mkdir jammy && cd jammy
-apt-get download $PKGS 2>&1 | tail -2
+apt-get download $PKGS 2>&1 | tail -2 || true
 cd "$WORK"
 rm -rf extract && mkdir extract
 for d in jammy/*.deb; do dpkg-deb -x "$d" extract/ 2>/dev/null; done
@@ -78,11 +88,10 @@ for d in jammy/*.deb; do dpkg-deb -x "$d" extract/ 2>/dev/null; done
 # ---- 3. noble 的 liburing 2.5（jammy 只有 2.0，cmake 要 ≥2.5）----
 step "noble liburing 2.5"
 cd "$WORK"
-NOBLE_M="$(zcat /tmp/noble/M.gz 2>/dev/null | grep -A20 '^Package: liburing-dev$' | grep '^Filename:' | awk '{print $2}' | head -1)"
-NOBLE_M="${NOBLE_M:-pool/main/libu/liburing/liburing-dev_2.5-1build1_amd64.deb}"
-[ -f "noble/M.gz" ] || curl -sL -o noble/M.gz "http://archive.ubuntu.com/ubuntu/dists/noble/main/binary-amd64/Packages.gz"
+# URL 直接写死：依赖包索引会让脚本在索引缺失时（而且 set -e 会让它静默中止）
+mkdir -p noble
 for F in "liburing-dev_2.5-1build1_amd64.deb" "liburing2_2.5-1build1_amd64.deb"; do
-  curl -sL -o "noble/$F" "http://archive.ubuntu.com/ubuntu/pool/main/libu/liburing/$F" || true
+  [ -s "noble/$F" ] || curl -sSfL -o "noble/$F" "http://archive.ubuntu.com/ubuntu/pool/main/libu/liburing/$F" || true
 done
 rm -rf u25 && mkdir u25
 for d in noble/liburing*.deb; do dpkg-deb -x "$d" u25/ 2>/dev/null || true; done
@@ -100,9 +109,11 @@ dpkg-deb -x noble/lcd612.deb lcd612/ 2>/dev/null || true
 # ---- 5. 全部落到本地前缀 ----
 step "安装到 $PREFIX"
 for f in extract/usr/lib/x86_64-linux-gnu/*.so* extract/usr/lib/x86_64-linux-gnu/*.a; do
-  [ -e "$f" ] && ln -sf "$f" "$PREFIX/lib/x86_64-linux-gnu/" || true
+  [ -e "$f" ] && ln -sf "$PREFIX/work/extract/usr/lib/x86_64-linux-gnu/$(basename "$f")" "$PREFIX/lib/x86_64-linux-gnu/" || true
 done
-for f in u25/usr/lib/x86_64-linux-gnu/liburing.so*; do [ -e "$f" ] && ln -sf "$f" "$PREFIX/lib/x86_64-linux-gnu/"; done
+for f in u25/usr/lib/x86_64-linux-gnu/liburing.so*; do
+  [ -e "$f" ] && ln -sf "$PREFIX/work/u25/usr/lib/x86_64-linux-gnu/$(basename "$f")" "$PREFIX/lib/x86_64-linux-gnu/"
+done
 cp -rf u25/usr/include/. "$PREFIX/include/" 2>/dev/null || true
 # 内核 UAPI 头整树覆盖（6.12）：STATX_DIOALIGN / io_uring addr3 / IORING_OP_SEND_ZC
 rm -rf "$PREFIX/include/linux" && mkdir -p "$PREFIX/include/linux"
@@ -123,6 +134,8 @@ for pc in extract/usr/lib/x86_64-linux-gnu/pkgconfig/*.pc u25/usr/lib/x86_64-lin
   # ⚠️ ffmpeg 那几个的 includedir 原本就带 /x86_64-linux-gnu 后缀（头装在多架构子目录），
   #    统一改成 ${prefix}/include 会把后缀弄丢 → 报 "libavcodec/avcodec.h: 没有那个文件"。
   #    其它库（hwloc/liburing/curl）的头在 include/ 根下，**不能**加后缀。
+  # libcurl.pc 属于**源码编译**的 curl 8.5，deb 里那份是 7.81 —— 不能覆盖它
+  [ "$n" = "libcurl.pc" ] && continue
   case "$n" in
     libav*.pc|libsw*.pc) inc='${prefix}/include/x86_64-linux-gnu' ;;
     *)                    inc='${prefix}/include' ;;
@@ -133,10 +146,15 @@ for pc in extract/usr/lib/x86_64-linux-gnu/pkgconfig/*.pc u25/usr/lib/x86_64-lin
 done
 
 # ---- 6. curl 8.5（无 LDAP）：noble 的 libcurl 依赖 OpenLDAP 2.6 → glibc 2.38，本机 2.35 ----
-step "编译 curl 8.5.0（关掉 SSL/Zlib/Brotli/LDAP/IDN2/PSL）"
-if ! grep -q "8\.5" "$PREFIX/lib/pkgconfig/libcurl.pc" 2>/dev/null; then
+step "检查已装的 curl / ffmpeg"
+[ -e "$PREFIX/lib/libcurl.so.4" ] && echo "  curl 8.5 已装，跳过编译"
+[ -e "$PREFIX/lib/libavcodec.so.61" ] && echo "  ffmpeg 7.1 已装，跳过编译"
+if ! grep -q "8\.5" "$PREFIX/lib/pkgconfig/libcurl.pc" 2>/dev/null || [ ! -s "$PREFIX/lib/pkgconfig/libcurl.pc" ]; then
   [ -d curl-8.5.0 ] || { curl -sL -o curl-8.5.0.tar.gz https://curl.se/download/curl-8.5.0.tar.gz && tar xzf curl-8.5.0.tar.gz; }
-  ( cd curl-8.5.0 && "$CMAKE_BIN/cmake" -S . -B build -G Ninja \
+  # 坏掉的 .pc 会让 curl 自己的 configure 读到空文件而失败；重建前先删掉，
+  # 并且这一步不让前缀的 PKG_CONFIG_PATH 参与（curl 用它自己源码树里的配置）
+  rm -f "$PREFIX/lib/pkgconfig/libcurl.pc"
+  ( cd curl-8.5.0 && env -u PKG_CONFIG_PATH "$CMAKE_BIN/cmake" -S . -B build -G Ninja \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
       -DBUILD_SHARED_LIBS=ON -DBUILD_STATIC_LIBS=OFF -DBUILD_TESTING=OFF -DBUILD_CURL_EXE=OFF \
       -DCURL_USE_OPENSSL=OFF -DCURL_ENABLE_SSL=OFF -DCURL_ZLIB=OFF -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF \
@@ -144,9 +162,12 @@ if ! grep -q "8\.5" "$PREFIX/lib/pkgconfig/libcurl.pc" 2>/dev/null; then
       -DENABLE_LDAP=OFF -DCURL_DISABLE_LDAP=ON -DUSE_NGHTTP2=OFF -DUSE_LIBSSH=OFF \
       >/dev/null && "$CMAKE_BIN/cmake" --build build --parallel 8 >/dev/null && "$CMAKE_BIN/cmake" --install build >/dev/null )
   for f in "$PREFIX"/lib/libcurl.so*; do [ -e "$f" ] && ln -sf "$f" "$PREFIX/lib/x86_64-linux-gnu/"; done
-  for pc in "$PREFIX"/lib/pkgconfig/libcurl.pc; do
-    [ -f "$pc" ] && sed -e "s|^prefix=.*|prefix=$PREFIX|" -e "s|^libdir=.*|libdir=\${prefix}/lib|" "$pc" > "$PREFIX/lib/pkgconfig/libcurl.pc"
-  done
+  # ⚠️ 不能 sed 读同一个文件又写回同一个文件：`>` 会先截断它，sed 就读到空 → 产出 0 字节 .pc
+  if [ -f "$PREFIX/lib/pkgconfig/libcurl.pc" ]; then
+    sed -e "s|^prefix=.*|prefix=$PREFIX|" -e "s|^libdir=.*|libdir=\${prefix}/lib|" \
+      "$PREFIX/lib/pkgconfig/libcurl.pc" > "$PREFIX/lib/pkgconfig/libcurl.pc.tmp"
+    mv "$PREFIX/lib/pkgconfig/libcurl.pc.tmp" "$PREFIX/lib/pkgconfig/libcurl.pc"
+  fi
 fi
 PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" pkg-config --modversion libcurl
 
@@ -160,6 +181,10 @@ for h in hwloc/autogen/config.h hwloc.h liburing.h liburing/compat.h curl/curl.h
 done
 
 # ---- 8. 配置 ----
+if [ "${SKIP_CONFIGURE:-0}" = "1" ]; then
+  echo "SKIP_CONFIGURE=1 → 跳过重新配置（保留已编译的二进制）"
+  exit 0
+fi
 step "cmake --preset turing-release"
 cd "$REPO"
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
