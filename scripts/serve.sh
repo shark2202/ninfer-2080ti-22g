@@ -31,6 +31,8 @@ LM_HEAD_DRAFT="${NINFER_LM_HEAD_DRAFT:-1}"
 MAX_CONCURRENCY="${NINFER_MAX_CONCURRENCY:-4}"
 API_KEY="${NINFER_API_KEY:-}"
 LOG_DIR="${NINFER_LOG_DIR:-$REPO_ROOT/logs}"
+# 额外参数（配置里可给；按空格切开，与命令行传入的追加参数合并）
+EXTRA_ARGS="${NINFER_EXTRA_ARGS:-}"
 PREFILL_CHUNK="${NINFER_PREFILL_CHUNK:-1024}"
 # The Turing build needs the FP8 KV type dropped; int8 is the tested one.
 BIN="$REPO_ROOT/build/turing-release/apps/ninfer-serve"
@@ -55,6 +57,7 @@ DRAFT_TOKENS="${NINFER_DRAFT_TOKENS:-$DRAFT_TOKENS}"
 MAX_CONCURRENCY="${NINFER_MAX_CONCURRENCY:-$MAX_CONCURRENCY}"
 API_KEY="${NINFER_API_KEY:-$API_KEY}"
 LOG_DIR="${NINFER_LOG_DIR:-$LOG_DIR}"
+EXTRA_ARGS="${NINFER_EXTRA_ARGS:-$EXTRA_ARGS}"
 
 # The rootless build keeps its libraries in a local prefix. It is applied to the server process
 # only, never exported: an exported LD_LIBRARY_PATH would also hit unrelated tools (curl then
@@ -123,6 +126,8 @@ args=(--host "$HOST" --port "$PORT"
 [ "$SPEC" = "none" ] || args+=(--spec "$SPEC" --draft-tokens "$DRAFT_TOKENS")
 [ "$LM_HEAD_DRAFT" = "1" ] && args+=(--lm-head-draft)
 [ -n "$API_KEY" ] && args+=(--api-key "$API_KEY")
+# 配置里的额外参数在前，命令行追加的在后（后者覆盖前者）
+[ -n "$EXTRA_ARGS" ] && read -r -a _extra <<< "$EXTRA_ARGS" && args+=("${_extra[@]}")
 args+=("$@")
 
 echo "starting: $BIN $MODEL --host $HOST --port $PORT (ctx $MAX_CONTEXT, kv $KV_DTYPE, spec $SPEC, lanes $MAX_CONCURRENCY)"
